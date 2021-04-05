@@ -200,6 +200,8 @@ static float limit_bottom = 0;  // Distance to bottom of drawing area.
 static float limit_right = 0;  // Distance to right of drawing area.
 static float limit_left = 0;  // Distance to left of drawing area.
 
+// with limit switches, the XY position of the plotter head when the limit switches are touched (after G28).
+// without switches, the XY position when the plotter head is at the very bottom in the center (at the end of both belts). 
 static float homeX=0;
 static float homeY=0;
 
@@ -602,37 +604,27 @@ void findHome() {
 
   // reel in the left motor until contact is made.
   Serial.println(F("Find left..."));
+  int hits;
   do {
-    M1_ONESTEP(M1_REEL_IN );
-    M2_ONESTEP(M2_REEL_OUT);
+    hits=0;
+    if(analogRead(L_PIN) < SWITCH_HALF) {
+      M1_ONESTEP(M1_REEL_IN);
+    } else hits++;
+    if(analogRead(R_PIN) < SWITCH_HALF)  {
+      M2_ONESTEP(M2_REEL_IN);
+    } else hits++;
     delayMicroseconds(home_step_delay);
-  } while(!readSwitches());
-  laststep1=0;
+  } while(hits<2);
 
   // back off so we don't get a false positive on the next motor
   int i;
   for(i=0;i<safe_out;++i) {
     M1_ONESTEP(M1_REEL_OUT);
+    M2_ONESTEP(M2_REEL_OUT);
     delayMicroseconds(home_step_delay);
   }
-  laststep1=safe_out;
 
-  // reel in the right motor until contact is made
-  Serial.println(F("Find right..."));
-  do {
-    M1_ONESTEP(M1_REEL_OUT);
-    M2_ONESTEP(M2_REEL_IN );
-    delay(step_delay);
-    laststep1++;
-  } while(!readSwitches());
-  laststep2=0;
-
-  // back off so we don't get a false positive that kills line()
-  for(i=0;i<safe_out;++i) {
-    M2_ONESTEP(M2_REEL_OUT);
-    delay(step_delay);
-  }
-  laststep2=safe_out;
+  teleport(homeX,homeY);
 
   Serial.println(F("Centering..."));
   line(homeX,homeY,posz);
