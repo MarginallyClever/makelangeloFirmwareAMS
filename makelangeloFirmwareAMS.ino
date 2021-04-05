@@ -6,6 +6,7 @@
 // Copyright at end of file.  Please see
 // http://www.github.com/MarginallyClever/Makelangelo for more information.
 
+// Defaut units are millimeters and degrees.
 
 //------------------------------------------------------------------------------
 // Sanity check
@@ -50,11 +51,13 @@
 #define L_PIN           (3)
 #define R_PIN           (5)
 
-// Marginally Clever steppers are 400 steps per turn.
-#define STEPPER_STEPS_PER_TURN    (400.0)
+
+// 1.8 degree steppers are 200 steps per turn.
+// 0.9 degree steppers are 400 steps per turn.
+#define STEPPER_STEPS_PER_TURN    (200.0)
+
 // We don't use microstepping on the AMS shield.
-#define MICROSTEPPING_MULTIPLIER  (16.0)
-#define STEPS_PER_TURN            (STEPPER_STEPS_PER_TURN*MICROSTEPPING_MULTIPLIER)
+#define MICROSTEPPING_MULTIPLIER  (1.0)
 
 
 #define NUM_TOOLS  (6)
@@ -80,8 +83,8 @@
 // These numbers directly affect the maximum velocity.
 #define MAX_STEPS_S     (STEPS_PER_TURN*MAX_RPM/60.0)  // steps/s
 
-#define MAX_FEEDRATE    (10000.0)
-#define MIN_FEEDRATE    (1.0) // steps / second
+#define MAX_FEEDRATE    (200.0)
+#define MIN_FEEDRATE    (0.01) // steps / second
 
 // for arc directions
 #define ARC_CW          (1)
@@ -92,7 +95,7 @@
 // Serial communication bitrate
 #define BAUD            (57600)
 // Maximum length of serial input message.
-#define MAX_BUF         (64)
+#define MAX_BUF         (60)
 
 // servo pin differs based on device
 #define SERVO_PIN1      (10)
@@ -107,6 +110,11 @@
 #endif
 
 
+#define STEPS_PER_TURN            (STEPPER_STEPS_PER_TURN*MICROSTEPPING_MULTIPLIER)
+#define PULLEY_PITCH              (20*2)  // 20 teeth of GT2 belt
+#define MM_PER_STEP               (PULLEY_PITCH/STEPS_PER_TURN)
+#define STEPS_PER_MM              (STEPS_PER_TURN/PULLEY_PITCH)
+
 
 #if MOTHERBOARD == 1
 #define M1_ONESTEP(x)  m1.onestep(x)//,MICROSTEP)
@@ -117,15 +125,16 @@
 #define M2_ONESTEP(x)  m2->onestep(x,MICROSTEP)
 #endif
 
+
 //------------------------------------------------------------------------------
 // EEPROM MEMORY MAP
 //------------------------------------------------------------------------------
 #define EEPROM_VERSION    7                   // Increment EEPROM_VERSION when adding new variables
 #define ADDR_VERSION      0                   // 0..255 (1 byte)
 #define ADDR_UUID        (ADDR_VERSION+1)     // long - 4 bytes
-#define ADDR_PULLEY_DIA1 (ADDR_UUID+4)        // float - 4 bytes
-#define ADDR_PULLEY_DIA2 (ADDR_PULLEY_DIA1+4) // float - 4 bytes
-#define ADDR_LEFT        (ADDR_PULLEY_DIA2+4) // float - 4 bytes
+#define ADDR_BELT_L      (ADDR_UUID+4)        // float - 4 bytes
+#define ADDR_BELT_R      (ADDR_BELT_L+4)      // float - 4 bytes
+#define ADDR_LEFT        (ADDR_BELT_R+4)      // float - 4 bytes
 #define ADDR_RIGHT       (ADDR_LEFT+4)        // float - 4 bytes
 #define ADDR_TOP         (ADDR_RIGHT+4)       // float - 4 bytes
 #define ADDR_BOTTOM      (ADDR_TOP+4)         // float - 4 bytes
@@ -208,9 +217,6 @@ int M1_REEL_OUT = BACKWARD;
 int M2_REEL_IN  = FORWARD;
 int M2_REEL_OUT = BACKWARD;
 
-// calculate some numbers to help us find feed_rate
-float pulleyDiameter = 4.0f/PI;  // cm
-float threadPerStep = 4.0f/STEPS_PER_TURN;  // pulleyDiameter*PI/STEPS_PER_TURN
 
 // plotter position.
 static float posx;
@@ -219,14 +225,10 @@ static float posz;  // pen state
 static float feed_rate=0;
 static long step_delay;
 
-
 // motor position
 static long laststep1, laststep2;
 
 static char absolute_mode=1;  // absolute or incremental programming mode?
-static float mode_scale;   // mm or inches?
-static char mode_name[3];
-
 
 // Serial comm reception
 static char serialBuffer[MAX_BUF+1];  // Serial buffer
@@ -243,21 +245,6 @@ long line_number;
 //------------------------------------------------------------------------------
 // METHODS
 //------------------------------------------------------------------------------
-
-
-
-//------------------------------------------------------------------------------
-// calculate max velocity, threadperstep.
-void adjustPulleyDiameter(float diameter1) {
-  pulleyDiameter = diameter1;
-  float PULLEY_CIRC = pulleyDiameter*PI;  // circumference
-  threadPerStep = PULLEY_CIRC/STEPS_PER_TURN;  // thread per step
-
-#if VERBOSE > 2
-  Serial.print(F("PulleyDiameter = "));  Serial.println(pulleyDiameter,3);
-  Serial.print(F("threadPerStep="));  Serial.println(threadPerStep,3);
-#endif
-}
 
 
 //------------------------------------------------------------------------------
@@ -335,21 +322,21 @@ void setPenAngle(int pen_angle) {
 // Inverse Kinematics - turns XY coordinates into lengths L1,L2
 void IK(float x, float y, long &l1, long &l2) {
 #ifdef COREXY
-  l1 = lround((x+y) / threadPerStep);
-  l2 = lround((x-y) / threadPerStep);
+  l1 = lround((x+y) / MM_PER_STEP);
+  l2 = lround((x-y) / MM_PER_STEP);
 #endif
 #ifdef TRADITIONALXY
-  l1 = lround((x) / threadPerStep);
-  l2 = lround((y) / threadPerStep);
+  l1 = lround((x) / MM_PER_STEP);
+  l2 = lround((y) / MM_PER_STEP);
 #endif
 #ifdef POLARGRAPH2
   // find length to M1
   float dy = y - limit_top;
   float dx = x - limit_left;
-  l1 = lround( sqrt(dx*dx+dy*dy) / threadPerStep );
+  l1 = lround( sqrt(dx*dx+dy*dy) / MM_PER_STEP );
   // find length to M2
   dx = limit_right - x;
-  l2 = lround( sqrt(dx*dx+dy*dy) / threadPerStep );
+  l2 = lround( sqrt(dx*dx+dy*dy) / MM_PER_STEP );
 #endif
 }
 
@@ -360,22 +347,22 @@ void IK(float x, float y, long &l1, long &l2) {
 // to find angle between M1M2 and M1P where P is the plotter position.
 void FK(float l1, float l2,float &x,float &y) {
 #ifdef COREXY
-  l1 *= threadPerStep;
-  l2 *= threadPerStep;
+  l1 *= MM_PER_STEP;
+  l2 *= MM_PER_STEP;
 
   x = (float)( l1 + l2 ) / 2.0;
   y = x - (float)l2;
 #endif
 #ifdef TRADITIONALXY
-  l1 *= threadPerStep;
-  l2 *= threadPerStep;
+  l1 *= MM_PER_STEP;
+  l2 *= MM_PER_STEP;
   x = l1;
   y = l2;
 #endif
 #ifdef POLARGRAPH2
-  float a = (float)l1 * threadPerStep;
+  float a = (float)l1 * MM_PER_STEP;
   float b = (limit_right-limit_left);
-  float c = (float)l2 * threadPerStep;
+  float c = (float)l2 * MM_PER_STEP;
 
   // slow, uses trig
   // we know law of cosines:   cc = aa + bb -2ab * cos( theta )
@@ -557,9 +544,10 @@ void arc(float cx,float cy,float x,float y,float z,char clockwise) {
 }
 
 
-//------------------------------------------------------------------------------
-// instantly move the virtual plotter position
-// does not validate if the move is valid
+/**
+ * instantly move the virtual plotter position
+ * does not check if the move is valid
+ */
 void teleport(float x,float y) {
   posx=x;
   posy=y;
@@ -575,10 +563,10 @@ void teleport(float x,float y) {
 /**
  * Print a helpful message to serial.  The first line must never be changed to play nice with the JAVA software.
  */
-void help() {
+void M100() {
   Serial.print(F("\n\nHELLO WORLD! I AM DRAWBOT #"));
   Serial.println(robot_uid);
-  sayVersionNumber();
+  sayFirmwareVersionNumber();
   Serial.println(F("M100 - display this message"));
   Serial.println(F("M101 [Tx.xx] [Bx.xx] [Rx.xx] [Lx.xx]"));
   Serial.println(F("       - display/update board dimensions."));
@@ -587,7 +575,7 @@ void help() {
 }
 
 
-void sayVersionNumber() {
+void sayFirmwareVersionNumber() {
   int versionNumber = loadVersion();
   
   Serial.print(F("Firmware v"));
@@ -703,13 +691,6 @@ void saveUID() {
 
 
 //------------------------------------------------------------------------------
-void savePulleyDiameter() {
-  EEPROM_writeLong(ADDR_PULLEY_DIA1,pulleyDiameter*10000);
-  //EEPROM_writeLong(ADDR_PULLEY_DIA2,pulleyDiameter*10000);
-}
-
-
-//------------------------------------------------------------------------------
 void saveDimensions() {
   Serial.println(F("Saving dimensions."));
   EEPROM_writeLong(ADDR_LEFT,limit_left*100);
@@ -799,23 +780,15 @@ void loadConfig() {
     // If not the current EEPROM_VERSION or the EEPROM_VERSION is sullied (i.e. unknown data)
     // Update the version number
     EEPROM.write(ADDR_VERSION,EEPROM_VERSION);
-    savePulleyDiameter();
   }
 
   // Retrieve stored configuration
   robot_uid=EEPROM_readLong(ADDR_UUID);
   loadDimensions();
-  loadPulleyDiameter();
   loadInversions();
   loadHome();
 }
 
-
-//------------------------------------------------------------------------------
-void loadPulleyDiameter() {
-  //4 decimal places of percision is enough
-  adjustPulleyDiameter((float)EEPROM_readLong(ADDR_PULLEY_DIA1)/10000.0f);
-}
 
 
 #ifdef USE_SD_CARD
@@ -1059,7 +1032,7 @@ void processCommand() {
   switch(cmd) {
   case 17:  motor_engage();  break;
   case 18:  motor_disengage();  break;
-  case 100:  help();  break;
+  case 100:  M100();  break;
   case 101:  processConfig();  break;
   case 110:  line_number = parseNumber('N',line_number);  break;
   case 114:  where();  break;
@@ -1090,16 +1063,6 @@ void processCommand() {
     }
   case 4:  // dwell
     pause(parseNumber('S',0) + parseNumber('P',0)*1000.0f);
-    break;
-  case 20: // inches -> cm
-    mode_scale=2.54f;  // inches -> cm
-    strcpy(mode_name,"in");
-    printFeedRate();
-    break;
-  case 21:
-    mode_scale=0.1;  // mm -> cm
-    strcpy(mode_name,"mm");
-    printFeedRate();
     break;
   case 28:  findHome();  break;
   case 54:
@@ -1156,30 +1119,11 @@ void processCommand() {
       }
     }
     break;
-  case 1: {
-      // adjust spool diameters
-      float amountL=parseNumber('L',pulleyDiameter);
-      float amountR=parseNumber('R',pulleyDiameter);
-
-      float tps1=threadPerStep;
-      adjustPulleyDiameter(amountL);
-      if(threadPerStep != tps1) {
-        // Update EEPROM
-        savePulleyDiameter();
-      }
-    }
-    break;
-  case 2:
-    Serial.print('L');  Serial.print(pulleyDiameter);
-    Serial.print(F(" R"));   Serial.println(pulleyDiameter);
-    break;
 #ifdef USE_SD_CARD
   case 3:  SD_ListFiles();  break;    // read directory
   case 4:  SD_ProcessFile(strchr(serialBuffer,' ')+1);  break;  // read file
 #endif
-  case 5:
-    sayVersionNumber();
-    break;
+  case 5: sayFirmwareVersionNumber(); break;
   case 6:  // set home
     setHome(parseNumber('X',(absolute_mode?homeX:0)*10)*0.1 + (absolute_mode?0:homeX),
             parseNumber('Y',(absolute_mode?homeY:0)*10)*0.1 + (absolute_mode?0:homeY));
@@ -1228,9 +1172,6 @@ void setup() {
   
   loadConfig();
 
-  Serial.print(F("\n\nHELLO WORLD! I AM DRAWBOT #"));
-  Serial.println(robot_uid);
-
 #ifdef USE_SD_CARD
   SD.begin();
   SD_ListFiles();
@@ -1242,10 +1183,6 @@ void setup() {
   m1 = AFMS0.getStepper(STEPPER_STEPS_PER_TURN, M2_PIN);
   m2 = AFMS0.getStepper(STEPPER_STEPS_PER_TURN, M1_PIN);
 #endif
-
-  // initialize the scale
-  strcpy(mode_name,"mm");
-  mode_scale=0.1;
 
 #if MOTHERBOARD == 2
   // Change the i2c clock from 100KHz to 400KHz
@@ -1271,7 +1208,7 @@ void setup() {
   // initialize the read buffer
   sofar=0;
   // display the help at startup.
-  help();
+  M100();
   ready();
 
   //testKinematics();
@@ -1351,14 +1288,14 @@ void loop() {
 
 
 /**
- * This file is part of makelangelo-firmware.
+ * This file is part of makelangeloFirmwareAMS.
  *
- * makelangelo-firmware is free software: you can redistribute it and/or modify
+ * makelangeloFirmwareAMS is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
  *
- * makelangelo-firmware is distributed in the hope that it will be useful,
+ * makelangeloFirmwareAMS is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
