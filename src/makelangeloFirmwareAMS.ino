@@ -20,10 +20,10 @@
 //------------------------------------------------------------------------------
 // CONSTANTS
 //------------------------------------------------------------------------------
-#define MOTHERBOARD 1  // Adafruit Motor Shield 1
-//#define MOTHERBOARD 2  // Adafruit Motor Shield 2
+#define AMS_MODEL 1  // Adafruit Motor Shield 1
+//#define AMS_MODEL 2  // Adafruit Motor Shield 2
 
-#if MOTHERBOARD == 2
+#if AMS_MODEL == 2
 // stacked motor shields have different addresses. The default is 0x60
 // 0x70 is the "all call" address - every shield will respond as one.
 #define SHIELD_ADDRESS (0x60)
@@ -60,7 +60,8 @@
 #define MICROSTEPPING_MULTIPLIER  (1.0)
 
 
-#define NUM_TOOLS  (6)
+#define NUM_TOOLS  (1)
+#define NUM_AXIES  (3)
 
 
 // *****************************************************************************
@@ -116,11 +117,10 @@
 #define STEPS_PER_MM              (STEPS_PER_TURN/PULLEY_PITCH)
 
 
-#if MOTHERBOARD == 1
+#if AMS_MODEL == 1
 #define M1_ONESTEP(x)  m1.onestep(x)//,MICROSTEP)
 #define M2_ONESTEP(x)  m2.onestep(x)//,MICROSTEP)
-#endif
-#if MOTHERBOARD == 2
+#elif AMS_MODEL == 2
 #define M1_ONESTEP(x)  m1->onestep(x,MICROSTEP)
 #define M2_ONESTEP(x)  m2->onestep(x,MICROSTEP)
 #endif
@@ -129,31 +129,50 @@
 //------------------------------------------------------------------------------
 // EEPROM MEMORY MAP
 //------------------------------------------------------------------------------
-#define EEPROM_VERSION    7                   // Increment EEPROM_VERSION when adding new variables
-#define ADDR_VERSION      0                   // 0..255 (1 byte)
-#define ADDR_UUID        (ADDR_VERSION+1)     // long - 4 bytes
-#define ADDR_BELT_L      (ADDR_UUID+4)        // float - 4 bytes
-#define ADDR_BELT_R      (ADDR_BELT_L+4)      // float - 4 bytes
-#define ADDR_LEFT        (ADDR_BELT_R+4)      // float - 4 bytes
-#define ADDR_RIGHT       (ADDR_LEFT+4)        // float - 4 bytes
-#define ADDR_TOP         (ADDR_RIGHT+4)       // float - 4 bytes
-#define ADDR_BOTTOM      (ADDR_TOP+4)         // float - 4 bytes
-#define ADDR_INVL        (ADDR_BOTTOM+4)      // bool - 1 byte
-#define ADDR_INVR        (ADDR_INVL+1)        // bool - 1 byte
-#define ADDR_HOMEX       (ADDR_INVR+1)        // float - 4 bytes
-#define ADDR_HOMEY       (ADDR_HOMEX+4)       // float - 4 bytes
+#define EEPROM_VERSION          10                  // Increment EEPROM_VERSION when adding new variables
+#define SIZEOF_FLOAT_BYTES      (4)
+#define SIZEOF_LONG_BYTES       (4)
+
+#define ADDR_VERSION            0                   // 0..255 (1 byte)
+
+#define ADDR_UUID               (ADDR_VERSION+1)     // long - 4 bytes
+#define EEPROM_UUID_LENGTH      (SIZEOF_LONG_BYTES)
+
+#define ADDR_LIMITS             (ADDR_UUID + EEPROM_UUID_LENGTH)
+#define ADDR_LEFT               (ADDR_LIMITS+0*SIZEOF_FLOAT_BYTES)
+#define ADDR_RIGHT              (ADDR_LIMITS+1*SIZEOF_FLOAT_BYTES)
+#define ADDR_TOP                (ADDR_LIMITS+2*SIZEOF_FLOAT_BYTES)
+#define ADDR_BOTTOM             (ADDR_LIMITS+3*SIZEOF_FLOAT_BYTES)
+#define ADDR_ZMAX               (ADDR_LIMITS+4*SIZEOF_FLOAT_BYTES)
+#define ADDR_ZMIN               (ADDR_LIMITS+5*SIZEOF_FLOAT_BYTES)
+
+#define EEPROM_LIMITS_LENGTH    (NUM_AXIES * 2 * SIZEOF_FLOAT_BYTES)
+
+#define ADDR_HOME               (ADDR_LIMITS + EEPROM_LIMITS_LENGTH)
+#define EEPROM_HOME_LENGTH      (NUM_AXIES * 1 * SIZEOF_FLOAT_BYTES)
+#define ADDR_HOMEX              (ADDR_HOME+0*SIZEOF_FLOAT_BYTES)
+#define ADDR_HOMEY              (ADDR_HOME+1*SIZEOF_FLOAT_BYTES)
+
+#define ADDR_CALIBRATION_LEFT   (ADDR_HOME + EEPROM_HOME_LENGTH)
+#define ADDR_CALIBRATION_LENGTH (1 * SIZEOF_FLOAT_BYTES)
+#define ADDR_CALIBRATION_RIGHT  (ADDR_CALIBRATION_LEFT + ADDR_CALIBRATION_LENGTH)
+
+
+// what are the motors called?
+#define MOTOR_1_NAME 'L'
+#define MOTOR_2_NAME 'R'
 
 
 //------------------------------------------------------------------------------
 // INCLUDES
 //------------------------------------------------------------------------------
-#if MOTHERBOARD == 1
+#if AMS_MODEL == 1
 #include <SPI.h>  // pkm fix for Arduino 1.5
 // Adafruit motor driver library, optimized
 #include "AFMotorDrawbot.h"
 #endif
 
-#if MOTHERBOARD == 2
+#if AMS_MODEL == 2
 #include <Wire.h>
 #include "Adafruit_MotorShield/Adafruit_MotorShield.h"
 #endif
@@ -175,12 +194,12 @@
 //------------------------------------------------------------------------------
 // VARIABLES
 //------------------------------------------------------------------------------
-#if MOTHERBOARD == 1
+#if AMS_MODEL == 1
 // Initialize Adafruit stepper controller
 static AF_Stepper m1((int)STEPPER_STEPS_PER_TURN, M2_PIN);
 static AF_Stepper m2((int)STEPPER_STEPS_PER_TURN, M1_PIN);
 #endif
-#if MOTHERBOARD == 2
+#if AMS_MODEL == 2
 // Initialize Adafruit stepper controller
 Adafruit_MotorShield AFMS0 = Adafruit_MotorShield(SHIELD_ADDRESS);
 Adafruit_StepperMotor *m1;
@@ -204,21 +223,6 @@ static float limit_left = 0;  // Distance to left of drawing area.
 // without switches, the XY position when the plotter head is at the very bottom in the center (at the end of both belts). 
 static float homeX=0;
 static float homeY=0;
-
-// what are the motors called?
-char m1d='L';
-char m2d='R';
-
-// motor inversions
-char m1i = 1;
-char m2i = 1;
-
-// which way are the spools wound, relative to motor movement?
-int M1_REEL_IN  = FORWARD;
-int M1_REEL_OUT = BACKWARD;
-int M2_REEL_IN  = FORWARD;
-int M2_REEL_OUT = BACKWARD;
-
 
 // plotter position.
 static float posx;
@@ -279,11 +283,11 @@ void setFeedRate(float v) {
   if(v < MIN_FEEDRATE) v = MIN_FEEDRATE;
 
   step_delay = 1000000.0 / v;
-#if MOTHERBOARD == 1
+#if AMS_MODEL == 1
   m1.setSpeed(v);
   m2.setSpeed(v);
 #endif
-#if MOTHERBOARD == 2
+#if AMS_MODEL == 2
   m1->setSpeed(v);
   m2->setSpeed(v);
 #endif
@@ -400,13 +404,14 @@ void line(float x,float y,float z) {
 
   long ad1=abs(d1);
   long ad2=abs(d2);
-  int dir1=d1<0?M1_REEL_IN:M1_REEL_OUT;
-  int dir2=d2<0?M2_REEL_IN:M2_REEL_OUT;
+  int dir1=d1<0?FORWARD:BACKWARD;
+  int dir2=d2<0?FORWARD:BACKWARD;
   long over;
   long i;
 
-  long ad = max(ad1,ad2);
   /*
+  long ad = max(ad1,ad2);
+
   long d = 1500;
   long accelerate_until = d - step_delay;
   long decelerate_after = ad - accelerate_until;
@@ -528,7 +533,7 @@ void arc(float cx,float cy,float x,float y,float z,char clockwise) {
 
   int i, segments = ceil( len / MM_PER_SEGMENT );
 
-  float nx, ny, nz, angle3, scale;
+  float nx, ny, nz, scale;
   float a,r;
   for(i=0;i<=segments;++i) {
     // interpolate around the arc
@@ -566,7 +571,7 @@ void teleport(float x,float y) {
  * Print a helpful message to serial.  The first line must never be changed to play nice with the JAVA software.
  */
 void M100() {
-  Serial.print(F("\n\nHELLO WORLD! I AM DRAWBOT #"));
+  Serial.print(F("\n\nHELLO WORLD! I AM POLARGRAPH #"));
   Serial.println(robot_uid);
   sayFirmwareVersionNumber();
   Serial.println(F("M100 - display this message"));
@@ -608,10 +613,10 @@ void findHome() {
   do {
     hits=0;
     if(analogRead(L_PIN) < SWITCH_HALF) {
-      M1_ONESTEP(M1_REEL_IN);
+      M1_ONESTEP(FORWARD);
     } else hits++;
     if(analogRead(R_PIN) < SWITCH_HALF)  {
-      M2_ONESTEP(M2_REEL_IN);
+      M2_ONESTEP(FORWARD);
     } else hits++;
     delayMicroseconds(home_step_delay);
   } while(hits<2);
@@ -619,8 +624,8 @@ void findHome() {
   // back off so we don't get a false positive on the next motor
   int i;
   for(i=0;i<safe_out;++i) {
-    M1_ONESTEP(M1_REEL_OUT);
-    M2_ONESTEP(M2_REEL_OUT);
+    M1_ONESTEP(BACKWARD);
+    M2_ONESTEP(BACKWARD);
     delayMicroseconds(home_step_delay);
   }
 
@@ -644,10 +649,10 @@ void where() {
 
 //------------------------------------------------------------------------------
 void printConfig() {
-  Serial.print(m1d);              Serial.print(F("="));
+  Serial.print(MOTOR_1_NAME);              Serial.print(F("="));
   Serial.print(limit_top);        Serial.print(F(","));
   Serial.print(limit_left);       Serial.print(F("\n"));
-  Serial.print(m2d);              Serial.print(F("="));
+  Serial.print(MOTOR_2_NAME);              Serial.print(F("="));
   Serial.print(limit_top);        Serial.print(F(","));
   Serial.print(limit_right);      Serial.print(F("\n"));
   Serial.print(F("Bottom="));     Serial.println(limit_bottom);
@@ -659,7 +664,7 @@ void printConfig() {
 // from http://www.arduino.cc/cgi-bin/yabb2/YaBB.pl?num=1234477290/3
 void EEPROM_writeLong(int ee, long value) {
   byte* p = (byte*)(void*)&value;
-  for (int i = 0; i < sizeof(value); i++)
+  for (uint8_t i = 0; i < sizeof(value); i++)
   EEPROM.write(ee++, *p++);
 }
 
@@ -669,7 +674,7 @@ void EEPROM_writeLong(int ee, long value) {
 float EEPROM_readLong(int ee) {
   long value = 0;
   byte* p = (byte*)(void*)&value;
-  for (int i = 0; i < sizeof(value); i++)
+  for (uint8_t i = 0; i < sizeof(value); i++)
   *p++ = EEPROM.read(ee++);
   return value;
 }
@@ -689,8 +694,6 @@ void saveDimensions() {
   EEPROM_writeLong(ADDR_RIGHT,limit_right*100);
   EEPROM_writeLong(ADDR_TOP,limit_top*100);
   EEPROM_writeLong(ADDR_BOTTOM,limit_bottom*100);
-  EEPROM_writeLong(ADDR_HOMEX,homeX*100);
-  EEPROM_writeLong(ADDR_HOMEY,homeY*100);
 }
 
 
@@ -718,22 +721,6 @@ void loadHome() {
   homeY = (float)EEPROM_readLong(ADDR_HOMEY)/100.0f;
   Serial.print(F(" x="));  Serial.print(homeX);
   Serial.print(F(" y="));  Serial.print(homeY);
-}
-
-
-//------------------------------------------------------------------------------
-void saveInversions() {
-  Serial.println(F("Saving inversions."));
-  EEPROM.write(ADDR_INVL,m1i>0?1:0);
-  EEPROM.write(ADDR_INVR,m2i>0?1:0);
-}
-
-
-//------------------------------------------------------------------------------
-void loadInversions() {
-  m1i = EEPROM.read(ADDR_INVL)>0?1:-1;
-  m2i = EEPROM.read(ADDR_INVR)>0?1:-1;
-  adjustInversions(m1i,m2i);
 }
 
 
@@ -777,7 +764,6 @@ void loadConfig() {
   // Retrieve stored configuration
   robot_uid=EEPROM_readLong(ADDR_UUID);
   loadDimensions();
-  loadInversions();
   loadHome();
 }
 
@@ -859,11 +845,11 @@ void motor_disengage() {
 
   motors_engaged = false;
 
-#if MOTHERBOARD == 1
+#if AMS_MODEL == 1
   m1.release();
   m2.release();
 #endif
-#if MOTHERBOARD == 2
+#if AMS_MODEL == 2
   m1->release();
   m2->release();
 #endif
@@ -880,8 +866,8 @@ void motor_engage() {
 
   motors_engaged = true;
 
-  M1_ONESTEP(M1_REEL_IN);  M1_ONESTEP(M1_REEL_OUT);
-  M2_ONESTEP(M2_REEL_IN);  M2_ONESTEP(M2_REEL_OUT);
+  M1_ONESTEP(FORWARD);  M1_ONESTEP(BACKWARD);
+  M2_ONESTEP(FORWARD);  M2_ONESTEP(BACKWARD);
 }
 
 
@@ -936,42 +922,10 @@ void processConfig() {
   limit_right=parseNumber('R',limit_right);
   limit_left=parseNumber('L',limit_left);
 
-  char gg=parseNumber('G',m1d);
-  char hh=parseNumber('H',m2d);
-  char i=parseNumber('I',0);
-  char j=parseNumber('J',0);
-
-  adjustInversions(i,j);
-
   // @TODO: check t>b, r>l ?
   printConfig();
 
   teleport(0,0);
-}
-
-
-void adjustInversions(int m1,int m2) {
-  if(m1>0) {
-    M1_REEL_IN  = FORWARD;
-    M1_REEL_OUT = BACKWARD;
-  } else if(m1<0) {
-    M1_REEL_IN  = BACKWARD;
-    M1_REEL_OUT = FORWARD;
-  }
-
-  if(m2>0) {
-    M2_REEL_IN  = FORWARD;
-    M2_REEL_OUT = BACKWARD;
-  } else if(m2<0) {
-    M2_REEL_IN  = BACKWARD;
-    M2_REEL_OUT = FORWARD;
-  }
-
-  if( m1!=m1i || m2 != m2i) {
-    m1i=m1;
-    m2i=m2;
-    saveInversions();
-  }
 }
 
 
@@ -1088,8 +1042,8 @@ void processCommand() {
       char *ptr=strchr(serialBuffer,' ')+1;
       int amount = atoi(ptr+1);
       int i, dir;
-      if(*ptr == m1d) {
-        dir = amount < 0 ? M1_REEL_IN : M1_REEL_OUT;
+      if(*ptr == MOTOR_1_NAME) {
+        dir = amount < 0 ? FORWARD : BACKWARD;
         amount=abs(amount);
 #if VERBOSE > 1
         Serial.print(F("M1 "));
@@ -1098,8 +1052,8 @@ void processCommand() {
         Serial.println(dir);
 #endif
         for(i=0;i<amount;++i) {  M1_ONESTEP(dir);  }
-      } else if(*ptr == m2d) {
-        dir = amount < 0 ? M2_REEL_IN : M2_REEL_OUT;
+      } else if(*ptr == MOTOR_2_NAME) {
+        dir = amount < 0 ? FORWARD : BACKWARD;
         amount = abs(amount);
 #if VERBOSE > 1
         Serial.print(F("M2 "));
@@ -1170,13 +1124,13 @@ void setup() {
 #endif
 
   // start the shield
-#if MOTHERBOARD == 2
+#if AMS_MODEL == 2
   AFMS0.begin();
   m1 = AFMS0.getStepper(STEPPER_STEPS_PER_TURN, M2_PIN);
   m2 = AFMS0.getStepper(STEPPER_STEPS_PER_TURN, M1_PIN);
 #endif
 
-#if MOTHERBOARD == 2
+#if AMS_MODEL == 2
   // Change the i2c clock from 100KHz to 400KHz
   // https://learn.adafruit.com/adafruit-motor-shield-v2-for-arduino/faq
   TWBR = ((F_CPU / 400000l) - 16) / 2;
